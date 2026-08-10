@@ -12,21 +12,5 @@
       "path": "/api/cron/snapshot-followers",
       "schedule": "0 7 * * *"
     }
-  ],
-  "services": {
-    "web": {
-      "root": ".",
-      "framework": "nextjs",
-      "buildCommand": "npm run db:generate"
-    }
-  },
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": {
-        "type": "service",
-        "service": "web"
-      }
-    }
   ]
 }
