@@ -203,16 +203,29 @@ async function sweepCampaign(
     // Second guard against races: skip comments this campaign has already fully
     // handled. "Fully handled" depends on the campaign: if it posts a public
     // reply, the completion signal is publicReplySentAt (a DM alone is not
-    // enough — the reply still has to land); otherwise a SENT DM is enough. This
-    // is what lets a comment whose DM sent but whose public reply failed come
-    // back and retry the reply.
+    // enough — the reply still has to land); otherwise one finished DM attempt
+    // is enough. This is what lets a comment whose DM sent but whose public
+    // reply failed come back and retry the reply.
+    //
+    // FAILED counts as finished, not as "try again later". A failure recorded
+    // against a comment does not prove the DM never arrived, so re-enqueueing
+    // it every sweep re-sent the same DM to the same commenter indefinitely.
     const handled = await prisma.dmLog.findMany({
       where: {
         automationId: automation.id,
         commentId: { in: needsAction.map((c) => c.id) },
         ...(automation.publicReplyEnabled
           ? { publicReplySentAt: { not: null } }
-          : { status: "SENT" }),
+          : {
+              status: {
+                in: [
+                  "SENT",
+                  "FAILED",
+                  "SKIPPED_DEDUP",
+                  "SKIPPED_PLAN_LIMIT",
+                ],
+              },
+            }),
       },
       select: { commentId: true },
     });

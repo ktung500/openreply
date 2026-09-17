@@ -34,6 +34,9 @@ const {
     operationalEvent: {
       create: vi.fn(),
     },
+    processedComment: {
+      create: vi.fn(),
+    },
   },
   mockSendPrivateReply: vi.fn(),
   mockSendPrivateReplyWithLinkButton: vi.fn(),
@@ -229,6 +232,8 @@ beforeEach(() => {
     workspaceId: "workspace_123",
   });
   mockPrisma.operationalEvent.create.mockResolvedValue({});
+  // No prior claim on the comment by default — the send goes ahead.
+  mockPrisma.processedComment.create.mockResolvedValue({});
   mockDecryptToken.mockReturnValue("decrypted_token");
   mockMatchKeywords.mockReturnValue({ matched: true, matchedKeyword: "LINK" });
   mockReserveWorkspaceDMSend.mockResolvedValue({
@@ -357,6 +362,25 @@ describe("DM Worker — Full Pipeline", () => {
     await processor(createMockJob());
 
     expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
+  });
+
+  it("should not re-send a comment DM whose earlier attempt was logged FAILED", async () => {
+    // A FAILED row does not prove the DM never arrived — Instagram may have
+    // accepted it and only the response back to us failed. Retrying is what was
+    // delivering the same DM to a commenter over and over.
+    mockPrisma.dmLog.findUnique.mockResolvedValue({
+      id: "existing_log",
+      status: "FAILED",
+      errorMessage: "socket hang up",
+    });
+    const processor = getProcessor();
+
+    await processor(createMockJob());
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockSendPrivateReplyWithButton).not.toHaveBeenCalled();
+    expect(mockSendPrivateReplyWithLinkButton).not.toHaveBeenCalled();
     expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
   });
 
@@ -819,6 +843,56 @@ describe("DM Worker — Full Pipeline", () => {
 });
 
 describe("DM Worker — one private reply per comment", () => {
+  it("should not DM a comment a deleted campaign already claimed", async () => {
+    // Deleting a campaign cascades its DmLog rows away, so the DmLog-based
+    // guard below sees nothing and a replacement campaign on the same post
+    // looks at the comment as if it were brand new. ProcessedComment holds no
+    // campaign reference, so its claim survives the delete and stops the
+    // re-send. This is the delete-and-recreate spam loop.
+    mockPrisma.processedComment.create.mockRejectedValue({ code: "P2002" });
+
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockSendPrivateReplyWithButton).not.toHaveBeenCalled();
+    expect(mockSendPrivateReplyWithLinkButton).not.toHaveBeenCalled();
+    // The reservation taken for the send it did not make is handed back.
+    expect(mockReleaseWorkspaceDMReservation).toHaveBeenCalled();
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "SKIPPED_DEDUP" }),
+      })
+    );
+  });
+
+  it("should surface a claim failure that is not a duplicate", async () => {
+    mockPrisma.processedComment.create.mockRejectedValue(
+      Object.assign(new Error("connection terminated"), { code: "P1017" })
+    );
+
+    const processor = getProcessor();
+    await expect(processor(createMockJob())).rejects.toThrow(
+      "connection terminated"
+    );
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+  });
+
+  it("should claim the comment before sending", async () => {
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockPrisma.processedComment.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          commentId: "comment_555",
+          instagramAccountId: "ig_456",
+        }),
+      })
+    );
+    expect(mockSendPrivateReply).toHaveBeenCalled();
+  });
+
   it("should skip a campaign when another already used the comment's private reply", async () => {
     mockPrisma.dmLog.findFirst.mockImplementation(
       async (args: { where?: { status?: string } } = {}) =>
@@ -987,6 +1061,17 @@ describe("DM Worker — DM keyword trigger", () => {
     await processor(createMockMessageJob());
 
     expect(mockSendDirectMessage).not.toHaveBeenCalled();
+    expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
+  });
+
+  it("should not re-send a DM reply whose earlier attempt was logged FAILED", async () => {
+    mockPrisma.dmLog.findUnique.mockResolvedValue({ status: "FAILED" });
+
+    const processor = getProcessor();
+    await processor(createMockMessageJob());
+
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
     expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
   });
 

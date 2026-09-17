@@ -81,17 +81,15 @@ export function getDMQueue(): Queue<DmQueueJob> {
       connection: getRedisConnection(),
       defaultJobOptions: {
         removeOnComplete: { count: 1000 }, // Keep last 1000 completed jobs
-        // Clear failed jobs shortly after they exhaust retries. Job ids are
-        // deterministic (comment_<acct>_<id>), so a retained failed job would
-        // block the polling reconciler from ever retrying that comment. Clearing
-        // them lets a later sweep re-enqueue and try again once a transient
-        // failure (e.g. an Instagram rate-limit window) has passed. Failure
-        // detail is still preserved in DmLog.
+        // Keep failed jobs around briefly for inspection only — nothing
+        // re-enqueues off the back of them. Failure detail lives in DmLog.
         removeOnFail: { age: 300, count: 2000 },
-        attempts: 3,
-        backoff: {
-          type: "custom",
-        },
+        // No retries. A send that Instagram accepted but that failed on the way
+        // back to us (timeout, 5xx, a DB write after the send) is
+        // indistinguishable here from one it rejected, so a retry re-DMs a
+        // commenter who already got the message. At-most-once is the only safe
+        // choice: one attempt, and the failure is recorded for the operator.
+        attempts: 1,
       },
     });
   }

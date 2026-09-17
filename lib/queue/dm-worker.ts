@@ -39,7 +39,19 @@ import {
   renderMessageWithoutLink,
 } from "@/lib/tracking/message";
 
-const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
+/**
+ * True for Prisma's unique-constraint violation (P2002). Used to turn a losing
+ * race on ProcessedComment.commentId into "someone else already claimed this"
+ * rather than a hard error.
+ */
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "P2002"
+  );
+}
 
 function formatError(error: unknown): string {
   if (error instanceof MetaApiError) {
@@ -246,15 +258,27 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
       },
     });
 
-    const alreadyDmd = existingLog?.status === "SENT";
+    // The DM leg runs at most once per comment. SENT is obvious; FAILED counts
+    // too, because a failure recorded here does not mean Instagram dropped the
+    // message — a timeout or 5xx after it was accepted looks exactly the same
+    // from our side. Re-sending on FAILED is what was delivering the same DM to
+    // a commenter over and over. SKIPPED_DEDUP means another campaign owns the
+    // comment's one private reply, which never stops being true.
+    const alreadyAttempted =
+      existingLog?.status === "SENT" ||
+      existingLog?.status === "FAILED" ||
+      existingLog?.status === "SKIPPED_DEDUP";
     const alreadyPublicReplied = Boolean(existingLog?.publicReplySentAt);
-    const needsDm = !alreadyDmd;
+    const needsDm = !alreadyAttempted;
 
     // Skip only when there is genuinely nothing left to do. A comment whose DM
-    // already sent but whose public reply never posted (e.g. it hit a rate
+    // leg is finished but whose public reply never posted (e.g. it hit a rate
     // limit) must still come back so the public reply can be retried.
     if (existingLog?.status === "SKIPPED_PLAN_LIMIT") continue;
-    if (alreadyDmd && (alreadyPublicReplied || !automation.publicReplyEnabled)) {
+    if (
+      alreadyAttempted &&
+      (alreadyPublicReplied || !automation.publicReplyEnabled)
+    ) {
       continue;
     }
 
@@ -538,6 +562,50 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     if (automation.requireFollow && !useOpeningDm) {
       const alreadyFollows = await getUserFollowStatus(accessToken, commenterId);
       sendFollowPrompt = alreadyFollows !== true;
+    }
+
+    // Claim the comment. ProcessedComment is keyed on commentId alone and holds
+    // no reference to a campaign, so the claim outlives the campaign that made
+    // it: deleting a campaign and building a new one on the same reel no longer
+    // re-opens comments that were already answered. DmLog cannot do this job —
+    // it cascades away with its campaign, which is exactly how a recreated
+    // campaign ended up DMing the same commenters a second time.
+    //
+    // Instagram allows one private reply per comment ever, across every
+    // campaign, so a comment claimed by anyone is finished for everyone. The
+    // claim is deliberately the last step before the send: taking it earlier
+    // would burn the comment on a run that skipped for a plan or rate limit and
+    // never actually sent.
+    //
+    // create() rather than check-then-send: the unique index on commentId makes
+    // it atomic, so concurrent workers cannot both win.
+    try {
+      await prisma.processedComment.create({
+        data: {
+          instagramAccountId,
+          commentId,
+          source: job.data.source ?? "WEBHOOK",
+        },
+      });
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
+
+      await releaseWorkspaceDMReservation(
+        automation.workspaceId,
+        usage.periodStart
+      );
+      await prisma.dmLog.update({
+        where: {
+          automationId_commentId: { automationId: automation.id, commentId },
+        },
+        data: {
+          status: "SKIPPED_DEDUP",
+          matchedKeyword: matchResult.matchedKeyword,
+          errorMessage:
+            "This comment was already answered — Instagram allows one private reply per comment, across all campaigns",
+        },
+      });
+      continue;
     }
 
     try {
@@ -977,10 +1045,14 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
       },
     });
 
-    // Already replied to this message (or deliberately skipped it) — a retry
-    // of the job must not send a second DM.
+    // Already answered this message, or deliberately skipped it — never send a
+    // second DM for the same inbound message. FAILED is terminal for the same
+    // reason it is on the comment path: the send may well have landed before
+    // the error reached us, and Meta redelivers webhooks, so a second pass
+    // would DM the sender twice.
     if (
       existingLog?.status === "SENT" ||
+      existingLog?.status === "FAILED" ||
       existingLog?.status === "SKIPPED_PLAN_LIMIT"
     ) {
       continue;
@@ -1243,10 +1315,6 @@ export function createDMWorker(): Worker<DmQueueJob> {
     {
       connection: getRedisConnection(),
       concurrency: 5,
-      settings: {
-        backoffStrategy: (attemptsMade: number) =>
-          BACKOFF_DELAYS[Math.min(attemptsMade - 1, BACKOFF_DELAYS.length - 1)],
-      },
     }
   );
 

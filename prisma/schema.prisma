@@ -253,12 +253,20 @@ model DmLog {
   @@index([status])
 }
 
-// Every comment the system has seen, from either the webhook or the polling
-// reconciler. This is the shared dedup set: a comment id present here has
-// already been queued for processing, so neither path acts on it twice. It is
-// distinct from DmLog (which only records comments that matched a campaign);
-// this records all comments so the reconciler doesn't re-sweep non-matching
-// ones every cycle.
+// Every comment a campaign has actually attempted a DM for, from either the
+// webhook or the polling reconciler. This is the durable cross-campaign dedup
+// set: Instagram allows one private reply per comment ever, so a comment id
+// present here is finished for every campaign, not just the one that claimed
+// it.
+//
+// It exists because DmLog cannot do this job. DmLog rows cascade away with
+// their campaign, so deleting a campaign erased all memory of what had been
+// sent and a new campaign on the same post re-DM'd everyone who had already
+// been answered. This table holds no campaign reference precisely so the claim
+// survives that.
+//
+// Only acted-on comments are recorded — never non-matching ones, or adding a
+// keyword later would silently skip the comments it was meant to catch.
 model ProcessedComment {
   id                 String   @id @default(cuid())
   instagramAccountId String
