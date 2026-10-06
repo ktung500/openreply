@@ -12,7 +12,7 @@ export default function PrivacyPage() {
     <LegalShell
       title="Privacy Policy"
       description="OpenReply helps businesses send Meta-compliant private replies when people comment on connected Instagram posts or reels."
-      updatedAt="May 24, 2026"
+      updatedAt="October 6, 2026"
     >
       <section>
         <h2 className="text-xl font-bold text-white">Data We Collect</h2>
@@ -59,8 +59,10 @@ export default function PrivacyPage() {
         <h2 className="text-xl font-bold text-white">Retention And Deletion</h2>
         <p className="mt-3">
           Customers can disconnect Instagram from settings, which removes the
-          stored Instagram connection and stops campaigns. For account or data
-          deletion, follow the Data Deletion page linked from the footer.
+          stored Instagram token and pauses campaigns, or delete the account
+          from settings, which permanently removes its campaigns and logs. For
+          workspace or user deletion, follow the Data Deletion page linked from
+          the footer.
         </p>
       </section>
 

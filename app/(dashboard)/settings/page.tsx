@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import type { AccountOption } from "@/components/account-select";
 import { InstagramConnectNotice } from "@/components/instagram-connect-notice";
+import type { ConnectionHealth } from "@/lib/instagram-accounts";
 
 interface SettingsData {
   workspace: {
@@ -20,9 +21,26 @@ interface SettingsData {
     AccountOption & {
       tokenExpiresAt: string | null;
       webhookSubscribed: boolean;
+      connection: ConnectionHealth;
     }
   >;
 }
+
+const CONNECTION_BADGE: Record<
+  ConnectionHealth["status"],
+  { label: string; className: string }
+> = {
+  connected: { label: "Connected", className: "bg-success/10 text-success" },
+  disconnected: {
+    label: "Disconnected",
+    className: "bg-warning/10 text-warning",
+  },
+  token_expired: { label: "Token expired", className: "bg-error/10 text-error" },
+  refresh_failed: {
+    label: "Reconnect needed",
+    className: "bg-error/10 text-error",
+  },
+};
 
 interface WorkspaceMembersData {
   currentUserRole: "OWNER" | "ADMIN" | "MEMBER";
@@ -75,12 +93,34 @@ export default function SettingsPage() {
   }
 
   async function disconnectInstagram(instagramAccountId: string) {
-    if (!confirm("Disconnect Instagram? Campaigns for this account will stop sending DMs.")) {
+    if (
+      !confirm(
+        "Disconnect Instagram? Campaigns for this account will pause and keep their history. Reconnect the same account to resume them."
+      )
+    ) {
       return;
     }
 
     setBusy(`disconnect:${instagramAccountId}`);
     await fetch("/api/instagram/disconnect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instagramAccountId }),
+    });
+    window.location.reload();
+  }
+
+  async function deleteInstagram(username: string, instagramAccountId: string) {
+    if (
+      !confirm(
+        `Permanently delete @${username} from this workspace? Every campaign for this account, along with its DM logs, tracked links and follower history, will be deleted. This cannot be undone.`
+      )
+    ) {
+      return;
+    }
+
+    setBusy(`delete:${instagramAccountId}`);
+    await fetch("/api/instagram/delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ instagramAccountId }),
@@ -123,6 +163,15 @@ export default function SettingsPage() {
   }
 
   const accounts = data?.instagramAccounts ?? [];
+  const liveAccounts = accounts.filter(
+    (account) => account.connection.status === "connected"
+  );
+  const overallStatus =
+    accounts.length === 0
+      ? { label: "Not connected", className: "bg-warning/10 text-warning" }
+      : liveAccounts.length === accounts.length
+        ? CONNECTION_BADGE.connected
+        : { label: "Needs attention", className: "bg-error/10 text-error" };
   const canManageMembers =
     membersData?.currentUserRole === "OWNER" ||
     membersData?.currentUserRole === "ADMIN";
@@ -148,13 +197,9 @@ export default function SettingsPage() {
               </p>
             </div>
             <span
-              className={`px-3 py-1.5 rounded-full text-xs font-medium ${
-                accounts.length > 0
-                  ? "bg-success/10 text-success"
-                  : "bg-warning/10 text-warning"
-              }`}
+              className={`px-3 py-1.5 rounded-full text-xs font-medium ${overallStatus.className}`}
             >
-              {accounts.length > 0 ? "Connected" : "Not connected"}
+              {overallStatus.label}
             </span>
           </div>
 
@@ -167,7 +212,9 @@ export default function SettingsPage() {
               </p>
             </div>
             <span className="text-sm text-muted">
-              {accounts.length > 0 ? `${accounts.length} connected` : "None"}
+              {accounts.length > 0
+                ? `${liveAccounts.length} of ${accounts.length} live`
+                : "None"}
             </span>
           </div>
 
@@ -177,34 +224,80 @@ export default function SettingsPage() {
                 Connect an Instagram professional account to launch campaigns.
               </p>
             )}
-            {accounts.map((account) => (
-              <div
-                key={account.id}
-                className="flex flex-col gap-3 rounded border border-border bg-surface/70 p-4 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div>
-                  <p className="text-sm font-semibold text-foreground">
-                    @{account.username}
-                  </p>
-                  <p className="mt-1 text-xs text-muted">
-                    Token expires{" "}
-                    {account.tokenExpiresAt
-                      ? new Date(account.tokenExpiresAt).toLocaleDateString()
-                      : "not available"}{" "}
-                    · {account.webhookSubscribed ? "Webhook ready" : "Webhook pending"}
-                  </p>
-                </div>
-                <button
-                  onClick={() => disconnectInstagram(account.id)}
-                  disabled={busy === `disconnect:${account.id}`}
-                  className="inline-flex items-center justify-center rounded border border-error/20 px-4 py-2 text-sm font-medium text-error transition-all hover:border-error/40 hover:bg-error/10 disabled:opacity-50"
+            {accounts.map((account) => {
+              const badge = CONNECTION_BADGE[account.connection.status];
+              const needsReconnect = account.connection.status !== "connected";
+              return (
+                <div
+                  key={account.id}
+                  className={`flex flex-col gap-3 rounded border bg-surface/70 p-4 sm:flex-row sm:items-center sm:justify-between ${
+                    needsReconnect ? "border-error/30" : "border-border"
+                  }`}
                 >
-                  {busy === `disconnect:${account.id}`
-                    ? "Disconnecting..."
-                    : "Disconnect"}
-                </button>
-              </div>
-            ))}
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-semibold text-foreground">
+                        @{account.username}
+                      </p>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${badge.className}`}
+                      >
+                        {badge.label}
+                      </span>
+                    </div>
+                    {account.connection.detail ? (
+                      <p className="mt-1 text-xs text-error">
+                        {account.connection.detail}
+                      </p>
+                    ) : (
+                      <p className="mt-1 text-xs text-muted">
+                        Token expires{" "}
+                        {account.tokenExpiresAt
+                          ? new Date(account.tokenExpiresAt).toLocaleDateString()
+                          : "not available"}{" "}
+                        ·{" "}
+                        {account.webhookSubscribed
+                          ? "Webhook ready"
+                          : "Webhook pending"}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {/* Same OAuth flow as Connect: the callback upserts on the
+                        Instagram user id, so re-authorizing this profile
+                        refreshes its token in place and keeps its campaigns. */}
+                    <a
+                      href="/api/instagram/connect"
+                      className={`inline-flex items-center justify-center rounded px-4 py-2 text-sm font-medium transition-colors ${
+                        needsReconnect
+                          ? "bg-accent text-white hover:bg-accent-hover"
+                          : "border border-border text-foreground hover:bg-surface"
+                      }`}
+                    >
+                      Reconnect
+                    </a>
+                    {account.connection.status !== "disconnected" && (
+                      <button
+                        onClick={() => disconnectInstagram(account.id)}
+                        disabled={busy === `disconnect:${account.id}`}
+                        className="inline-flex items-center justify-center rounded border border-border px-4 py-2 text-sm font-medium text-muted transition-all hover:bg-surface disabled:opacity-50"
+                      >
+                        {busy === `disconnect:${account.id}`
+                          ? "Disconnecting..."
+                          : "Disconnect"}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => deleteInstagram(account.username, account.id)}
+                      disabled={busy === `delete:${account.id}`}
+                      className="inline-flex items-center justify-center rounded border border-error/20 px-4 py-2 text-sm font-medium text-error transition-all hover:border-error/40 hover:bg-error/10 disabled:opacity-50"
+                    >
+                      {busy === `delete:${account.id}` ? "Deleting..." : "Delete"}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 

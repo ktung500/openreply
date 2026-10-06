@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUserId, getCurrentWorkspaceId } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
+import { describeConnection } from "@/lib/instagram-accounts";
 import {
   calculateCtr,
   normalizeTopKeywords,
@@ -50,6 +51,7 @@ export async function GET(request: NextRequest) {
     recentLogs,
     user,
     contactRows,
+    tokenRefreshErrors,
   ] = await Promise.all([
     prisma.workspace.findUnique({
       where: { id: workspaceId },
@@ -79,6 +81,8 @@ export async function GET(request: NextRequest) {
         name: true,
         tokenExpiresAt: true,
         webhookSubscribed: true,
+        disconnectedAt: true,
+        updatedAt: true,
       },
     }),
     prisma.automation.count({ where: { workspaceId, ...accountFilter } }),
@@ -147,6 +151,15 @@ export async function GET(request: NextRequest) {
       distinct: ["commenterId"],
       select: { commenterId: true },
     }),
+    // Only failed refreshes are logged; a success just bumps the row's
+    // updatedAt. describeConnection uses that ordering to tell a stale error
+    // from a current one.
+    prisma.operationalEvent.findMany({
+      where: { workspaceId, source: "TOKEN_REFRESH", level: "ERROR" },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+      select: { createdAt: true, message: true, payload: true },
+    }),
   ]);
 
   const dailyDMs: { date: string; count: number }[] = [];
@@ -196,7 +209,10 @@ export async function GET(request: NextRequest) {
       contactsCount: contactRows.length,
       workspace,
       instagramAccount,
-      instagramAccounts,
+      instagramAccounts: instagramAccounts.map((account) => ({
+        ...account,
+        connection: describeConnection(account, tokenRefreshErrors),
+      })),
       selectedInstagramAccountId: selectedAccountId,
       totalAutomations,
       activeAutomations,

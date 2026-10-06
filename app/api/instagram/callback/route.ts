@@ -101,6 +101,7 @@ export async function GET(request: NextRequest) {
         accessToken: encryptedToken,
         tokenExpiresAt,
         webhookSubscribed,
+        disconnectedAt: null,
       },
     });
 

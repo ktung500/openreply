@@ -5,6 +5,9 @@ import {
   getCurrentWorkspaceContext,
 } from "@/lib/workspace-access";
 
+// Permanently removes the account. Campaigns, DM logs, tracked links, clicks
+// and follower history cascade with it. Disconnecting (see ../disconnect) is
+// the reversible version that only clears the token.
 export async function POST(request: NextRequest) {
   const context = await getCurrentWorkspaceContext();
   if (!context) {
@@ -16,7 +19,7 @@ export async function POST(request: NextRequest) {
 
   if (!canManageWorkspace(context.role)) {
     return NextResponse.json(
-      { success: false, error: "Only owners and admins can disconnect accounts" },
+      { success: false, error: "Only owners and admins can delete accounts" },
       { status: 403 }
     );
   }
@@ -25,20 +28,15 @@ export async function POST(request: NextRequest) {
   const instagramAccountId =
     typeof body.instagramAccountId === "string" ? body.instagramAccountId : null;
 
-  // Clear the token but keep the row: campaigns and their history survive,
-  // and reconnecting the same profile upserts onto this row (callback keys on
-  // instagramId), which restores them. The empty token is what the worker and
-  // crons already treat as "no credentials", so sends pause immediately.
-  await prisma.instagramAccount.updateMany({
-    where: {
-      workspaceId: context.workspaceId,
-      ...(instagramAccountId ? { id: instagramAccountId } : {}),
-    },
-    data: {
-      accessToken: "",
-      webhookSubscribed: false,
-      disconnectedAt: new Date(),
-    },
+  if (!instagramAccountId) {
+    return NextResponse.json(
+      { success: false, error: "instagramAccountId is required" },
+      { status: 400 }
+    );
+  }
+
+  await prisma.instagramAccount.deleteMany({
+    where: { workspaceId: context.workspaceId, id: instagramAccountId },
   });
 
   return NextResponse.json({ success: true });

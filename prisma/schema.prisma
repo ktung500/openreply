@@ -134,6 +134,10 @@ model InstagramAccount {
   tokenExpiresAt    DateTime?
   webhookSubscribed Boolean  @default(false)
   connectedAt       DateTime @default(now())
+  /// Set when the user disconnects. The token is cleared and campaigns pause,
+  /// but the row and everything that cascades from it stay so a reconnect
+  /// restores service. Only an explicit delete removes the data.
+  disconnectedAt    DateTime?
   updatedAt         DateTime @updatedAt
 
   workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)

@@ -12,14 +12,24 @@ export default function DataDeletionPage() {
     <LegalShell
       title="Data Deletion"
       description="Use this page for Meta App Review and customer requests about removing OpenReply account, workspace, Instagram, and campaign data."
-      updatedAt="May 24, 2026"
+      updatedAt="October 6, 2026"
     >
       <section>
         <h2 className="text-xl font-bold text-white">Disconnect Instagram</h2>
         <p className="mt-3">
           Sign in, open Settings, and select Disconnect. This removes the stored
-          Instagram connection token and stops campaigns from sending private
-          replies for that workspace.
+          Instagram connection token and pauses campaigns for that account.
+          Campaign settings and history are kept so you can reconnect later.
+        </p>
+      </section>
+
+      <section>
+        <h2 className="text-xl font-bold text-white">Delete Instagram Account Data</h2>
+        <p className="mt-3">
+          To remove an Instagram account entirely, select Delete next to it in
+          Settings. This permanently deletes the connection along with every
+          campaign, private reply log, tracked link, click record, and follower
+          snapshot for that account.
         </p>
       </section>
 
